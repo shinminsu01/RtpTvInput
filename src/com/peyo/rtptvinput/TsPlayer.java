@@ -10,11 +10,17 @@ import com.google.android.exoplayer2.DefaultLoadControl;
 import com.google.android.exoplayer2.ExoPlayerFactory;
 import com.google.android.exoplayer2.SimpleExoPlayer;
 import com.google.android.exoplayer2.extractor.DefaultExtractorsFactory;
+import com.google.android.exoplayer2.extractor.ExtractorMetaData;
 import com.google.android.exoplayer2.source.ExtractorMediaSource;
 import com.google.android.exoplayer2.source.MediaSource;
 import com.google.android.exoplayer2.trackselection.DefaultTrackSelector;
 import com.google.android.exoplayer2.upstream.DefaultAllocator;
 import com.peyo.rtptvinput.source.TsDataSourceFactory;
+
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.util.ArrayList;
 
 import static com.google.android.exoplayer2.DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS;
 import static com.google.android.exoplayer2.DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_MS;
@@ -100,7 +106,7 @@ public class TsPlayer {
     public void setDataSource(String uri) {
         mSource = new ExtractorMediaSource(Uri.parse(uri),
                 mSourceFactory,
-                new DefaultExtractorsFactory(), null, null);
+                new DefaultExtractorsFactory(), null, null, getExtractorMetaData(uri));
     }
 
     private void play() {
@@ -136,5 +142,18 @@ public class TsPlayer {
         }
     }
 
-
+    private ExtractorMetaData getExtractorMetaData(String uri) {
+        ExtractorMetaData metaData = new ExtractorMetaData();
+        ObjectInputStream ois = null;
+        try {
+            ois = new ObjectInputStream(new FileInputStream(
+                    uri.replace("file://", "").replace(".ts", ".dat")));
+            metaData = (ExtractorMetaData) ois.readObject();
+            ois.close();
+        } catch (IOException | ClassNotFoundException e) {
+            e.printStackTrace();
+            return null;
+        }
+        return metaData;
+    }
 }

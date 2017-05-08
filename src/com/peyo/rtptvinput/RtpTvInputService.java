@@ -30,6 +30,7 @@ public class RtpTvInputService extends TvInputService {
 	@Override
 	public void onCreate() {
 		super.onCreate();
+
 		JobScheduler jobScheduler =
 				(JobScheduler) getSystemService(Context.JOB_SCHEDULER_SERVICE);
 		JobInfo pendingJob = jobScheduler.getPendingJob(DVR_CLEANUP_JOB_ID);
