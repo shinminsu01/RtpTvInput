@@ -7,6 +7,7 @@ import android.view.Surface;
 
 import com.google.android.exoplayer2.C;
 import com.google.android.exoplayer2.DefaultLoadControl;
+import com.google.android.exoplayer2.ExoPlayer;
 import com.google.android.exoplayer2.ExoPlayerFactory;
 import com.google.android.exoplayer2.SimpleExoPlayer;
 import com.google.android.exoplayer2.extractor.DefaultExtractorsFactory;
@@ -20,7 +21,6 @@ import com.peyo.rtptvinput.source.TsDataSourceFactory;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.ObjectInputStream;
-import java.util.ArrayList;
 
 import static com.google.android.exoplayer2.DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS;
 import static com.google.android.exoplayer2.DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_MS;
@@ -142,6 +142,31 @@ public class TsPlayer {
         }
     }
 
+    public void setAudioVolume(float volume) {
+        if (mExoPlayer != null) {
+            mExoPlayer.setVolume(volume);
+        }
+    }
+
+    public boolean isPrepared() {
+        if (mExoPlayer != null) {
+            int state = mExoPlayer.getPlaybackState();
+            switch (state) {
+                case ExoPlayer.STATE_READY:
+                case ExoPlayer.STATE_BUFFERING:
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    public boolean isBuffering() {
+        if (mExoPlayer != null) {
+            return mExoPlayer.getPlaybackState() == ExoPlayer.STATE_BUFFERING;
+        }
+        return false;
+    }
+	
     private ExtractorMetaData getExtractorMetaData(String uri) {
         ExtractorMetaData metaData = new ExtractorMetaData();
         ObjectInputStream ois = null;

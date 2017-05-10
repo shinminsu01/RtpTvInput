@@ -11,6 +11,8 @@ import android.media.tv.TvContract;
 import android.media.tv.TvInputManager;
 import android.media.tv.TvInputService;
 import android.net.Uri;
+import android.os.Handler;
+import android.os.Message;
 import android.support.annotation.Nullable;
 import android.util.Log;
 import android.view.Surface;
@@ -52,14 +54,28 @@ public class RtpTvInputService extends TvInputService {
 		return new Session(this);
 	}
 
-	private class Session extends TvInputService.Session implements TsPlayer.Listener {
+	private class Session extends TvInputService.Session implements
+            TsPlayer.Listener, Handler.Callback {
 		private final TsPlayer mPlayer;
 		private int mServiceId = 0;
+		private PlaybackParams mPlaybackParams;
+		private Handler mHandler;
+		private long mBufferStartTimeMs;
+		private boolean mRecorded = false;
+		private long mRecordedDurationMs;
+		private volatile long mTrickPlayTargetMs = 0;
+
+		private static final int EXPECTED_KEY_FRAME_INTERVAL_MS = 1000;
+		private static final int MIN_TRICKPLAY_SEEK_INTERVAL_MS = 1000;
+		private static final int MSG_TRICKPLAY = 100;
 
 		public Session(Context context) {
 			super(context);
 			mPlayer = new TsPlayer(context, this);
 			mPlayer.setDataSourceFactory(TsDataSourceFactory.createSourceFactory());
+			mHandler = new Handler(this);
+			mPlaybackParams = new PlaybackParams();
+			mPlaybackParams.setSpeed(1);
 		}
 
 		@Override
@@ -88,6 +104,7 @@ public class RtpTvInputService extends TvInputService {
 				notifyTimeShiftStatusChanged(TvInputManager.TIME_SHIFT_STATUS_UNAVAILABLE);
 				mPlayer.stop();
 				mPlayer.setDataSource(getRtpAddress(mServiceId));
+				mPlayer.setAudioVolume(1);
 				mPlayer.start();
 			}
 			return true;
@@ -96,8 +113,8 @@ public class RtpTvInputService extends TvInputService {
 		@Override
 		public void onTimeShiftPlay(Uri uri) {
 			Log.i(TAG, "onTimeShiftPlay() uri : " + uri);
-
-			String[] projection = { TvContract.RecordedPrograms.COLUMN_RECORDING_DATA_URI };
+			String[] projection = { TvContract.RecordedPrograms.COLUMN_RECORDING_DATA_URI,
+					TvContract.RecordedPrograms.COLUMN_RECORDING_DURATION_MILLIS };
 			Cursor cursor = getContentResolver().query(uri, projection, null, null, null);
 			if (cursor.getCount() > 0) {
 				cursor.moveToFirst();
@@ -105,49 +122,97 @@ public class RtpTvInputService extends TvInputService {
 				notifyTimeShiftStatusChanged(TvInputManager.TIME_SHIFT_STATUS_UNAVAILABLE);
 				mPlayer.stop();
 				mPlayer.setDataSource(cursor.getString(0));
+				mRecorded  = true;
+				mRecordedDurationMs = cursor.getLong(1);
+				mPlayer.setAudioVolume(1);
 				mPlayer.start();
 			}
 		}
 
 		@Override
 		public void onPlayStarted() {
-			mBufferStartTimeMs = System.currentTimeMillis();
-			Log.i(TAG, "onPlayStarted() " +
-					DateFormat.getTimeInstance().format(new Date(mBufferStartTimeMs)));
+			if (mTrickPlayTargetMs != 0)
+				return;
+			Log.i(TAG, "onPlayStarted()");
+			mBufferStartTimeMs = mRecorded ? 0 : System.currentTimeMillis();
 			notifyVideoAvailable();
 			notifyTimeShiftStatusChanged(TvInputManager.TIME_SHIFT_STATUS_AVAILABLE);
 		}
 
-		private volatile long mBufferStartTimeMs;
-
 		@Override
 		public void onTimeShiftPause() {
 			Log.i(TAG, "TimeShiftPause");
+			mHandler.removeMessages(MSG_TRICKPLAY);
 			mPlayer.pause();
 		}
 
 		@Override
 		public void onTimeShiftResume() {
 			Log.i(TAG, "TimeShiftResume");
+			mHandler.removeMessages(MSG_TRICKPLAY);
 			mPlayer.setPlaybackParams(new PlaybackParams().setSpeed(1));
+			mPlayer.setAudioVolume(1);
 			mPlayer.resume();
 		}
 
 		@Override
 		public void onTimeShiftSeekTo(long timeMs) {
-			Log.i(TAG, "SeekTo " +
-					DateFormat.getTimeInstance().format(new Date(timeMs)));
+			Log.i(TAG, "TimeShiftResume = " + timeMs);
+			mHandler.removeMessages(MSG_TRICKPLAY);
 			mPlayer.seekTo(timeMs - mBufferStartTimeMs);
 		}
 
 		@Override
 		public void onTimeShiftSetPlaybackParams(PlaybackParams params) {
+			mPlaybackParams = params;
 			float speed = params.getSpeed();
-			if (1.0f <= speed && speed <= 4.0f) {
-				Log.i(TAG, "SetPlaybackParams " + params.getSpeed());
+			if (1 <= speed && speed <= 2) {
 				mPlayer.setPlaybackParams(params);
+				mPlayer.setAudioVolume(1);
 				mPlayer.resume();
+			} else if (2 < speed) {
+				if (!mHandler.hasMessages(MSG_TRICKPLAY)) {
+					mPlayer.setAudioVolume(0);
+					mPlayer.pause();
+					mTrickPlayTargetMs = mPlayer.getCurrentPosition()
+							+ (int) speed * getTrickPlaySeekIntervalMs() ;
+					mHandler.sendEmptyMessage(MSG_TRICKPLAY);
+				}
 			}
+		}
+
+		private int getTrickPlaySeekIntervalMs() {
+			return Math.max(EXPECTED_KEY_FRAME_INTERVAL_MS / (int) Math.abs(mPlaybackParams.getSpeed()),
+					MIN_TRICKPLAY_SEEK_INTERVAL_MS);
+		}
+
+		private void doTrickPlayBySeek() {
+			mHandler.removeMessages(MSG_TRICKPLAY);
+			float speed = mPlaybackParams.getSpeed();
+			if (speed == 1 || !mPlayer.isPrepared()) {
+				return;
+			}
+			if ( mTrickPlayTargetMs > (mRecorded ? mRecordedDurationMs :
+					(System.currentTimeMillis() - mBufferStartTimeMs))) {
+				mPlaybackParams.setSpeed(1);
+				mPlayer.setAudioVolume(1);
+				mTrickPlayTargetMs = 0;
+				return;
+			}
+			long delayForNextSeek = getTrickPlaySeekIntervalMs();
+			mPlayer.seekTo(mTrickPlayTargetMs);
+			mTrickPlayTargetMs += speed * delayForNextSeek;
+			mHandler.sendEmptyMessageDelayed(MSG_TRICKPLAY, delayForNextSeek);
+		}
+
+		@Override
+		public boolean handleMessage(Message msg) {
+			switch (msg.what) {
+				case MSG_TRICKPLAY:
+					doTrickPlayBySeek();
+					return true;
+			}
+			return false;
 		}
 
 		@Override
@@ -157,8 +222,14 @@ public class RtpTvInputService extends TvInputService {
 
 		@Override
 		public long onTimeShiftGetCurrentPosition() {
-			long currentTimeMs = mBufferStartTimeMs + mPlayer.getCurrentPosition();
-			//Log.i(TAG, "GetCurrentPosition " + DateFormat.getTimeInstance().format(new Date(currentTimeMs)));
+			if (mTrickPlayTargetMs != 0)
+				return mTrickPlayTargetMs;
+
+			long currentTimeMs = mBufferStartTimeMs;
+
+			if (mPlayer != null) {
+				currentTimeMs += mPlayer.getCurrentPosition();
+			}
 			return currentTimeMs;
 		}
 
